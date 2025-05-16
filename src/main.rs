@@ -1,109 +1,132 @@
-use druid::widget::{Button, Controller, Flex, Label, Scroll, TextBox};
+use druid::widget::{Button, Flex, Scroll, SizedBox, TextBox};
 use druid::{
-    AppLauncher, Data, Env, Event, EventCtx, Lens, LifeCycle, LifeCycleCtx, Widget, WidgetExt,
+    AppLauncher, Command, Data, DelegateCtx, Env, Lens, Selector, Target, Widget, WidgetExt,
     WindowDesc,
 };
-
+use rfd::FileDialog;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 
-#[derive(Clone, Data, Lens)]
+const NEW_FILE: Selector = Selector::new("astraltext.new-file");
+const OPEN_FILE: Selector = Selector::new("astraltext.open-file");
+const SAVE_FILE: Selector = Selector::new("astraltext.save-file");
+const SAVE_FILE_AS: Selector = Selector::new("astraltext.save-file-as");
+
+#[derive(Clone, Data, Lens, Debug)]
 struct EditorState {
     content: String,
+    file_path: Option<String>,
 }
 
 fn main() {
-    println!("🚀 AstralText is launching...");
-
     let main_window = WindowDesc::new(build_ui())
-        .title("AstralText - Rust Text Editor")
-        .window_size((600.0, 400.0));
+        .title("AstralText - Rust Text Editor | v1.0 | Developed by Kelsi Davis | https://geekastro.dev")
+        .window_size((800.0, 600.0));
 
     let initial_state = EditorState {
         content: String::new(),
+        file_path: None,
     };
 
     AppLauncher::with_window(main_window)
+        .delegate(AppDelegate)
         .log_to_console()
         .launch(initial_state)
         .expect("Failed to launch application");
 }
 
-// Custom Controller to force focus on the TextBox
-struct FocusController;
-
-impl<W: Widget<EditorState>> Controller<EditorState, W> for FocusController {
-    fn event(
-        &mut self,
-        child: &mut W,
-        ctx: &mut EventCtx,
-        event: &Event,
-        data: &mut EditorState,
-        env: &Env,
-    ) {
-        if let Event::WindowConnected = event {
-            println!("✅ TextBox Window Connected - requesting focus");
-            ctx.request_focus();
-        }
-
-        if let Event::MouseDown(_) = event {
-            println!("✅ TextBox clicked - requesting focus");
-            ctx.request_focus();
-        }
-
-        child.event(ctx, event, data, env);
-    }
-}
-
 fn build_ui() -> impl Widget<EditorState> {
-    println!("✅ UI is being built...");
-
     let text_editor = TextBox::multiline()
         .with_placeholder("Start typing here...")
         .lens(EditorState::content)
-        .expand_width()
-        .fix_height(300.0)
-        .controller(FocusController);
+        .fix_width(780.0)
+        .fix_height(500.0);
 
-    let open_button = Button::new("Open").on_click(|_ctx, data: &mut EditorState, _| {
-        println!("📂 Open button clicked");
-        if let Ok(mut file) = File::open("example.txt") {
-            let mut content = String::new();
-            if file.read_to_string(&mut content).is_ok() {
-                data.content = content;
-                println!("✅ File loaded successfully");
-            } else {
-                println!("❌ Failed to read file");
-            }
-        } else {
-            println!("❌ Failed to open file");
-        }
-    });
+    let text_area = SizedBox::new(Scroll::new(text_editor))
+        .fix_width(780.0)
+        .fix_height(500.0);
 
-    let save_button = Button::new("Save").on_click(|_ctx, data: &mut EditorState, _| {
-        println!("💾 Save button clicked");
-        if let Ok(mut file) = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open("example.txt")
-        {
-            if file.write_all(data.content.as_bytes()).is_ok() {
-                println!("✅ File saved successfully");
-            } else {
-                println!("❌ Failed to save file");
-            }
-        } else {
-            println!("❌ Failed to create/open file for saving");
-        }
-    });
+    let status_bar = Flex::row()
+        .with_child(Button::new("New").on_click(|ctx, _, _| ctx.submit_command(NEW_FILE)))
+        .with_spacer(10.0)
+        .with_child(Button::new("Open").on_click(|ctx, _, _| ctx.submit_command(OPEN_FILE)))
+        .with_spacer(10.0)
+        .with_child(Button::new("Save").on_click(|ctx, _, _| ctx.submit_command(SAVE_FILE)))
+        .with_spacer(10.0)
+        .with_child(Button::new("Save As").on_click(|ctx, _, _| ctx.submit_command(SAVE_FILE_AS)))
+        .padding((8.0, 5.0))
+        .fix_height(50.0);
 
     Flex::column()
-        .with_child(Label::new("AstralText - Rust Text Editor").center())
-        .with_flex_child(Scroll::new(text_editor).vertical().expand(), 1.0)
-        .with_child(
-            Flex::row()
-                .with_child(open_button.padding(5.0))
-                .with_child(save_button.padding(5.0)),
-        )
-        .padding(10.0)
+        .with_child(text_area)
+        .with_spacer(5.0)
+        .with_child(status_bar)
+}
+
+struct AppDelegate;
+
+impl druid::AppDelegate<EditorState> for AppDelegate {
+    fn command(
+        &mut self,
+        _ctx: &mut DelegateCtx,
+        _target: Target,
+        cmd: &Command,
+        data: &mut EditorState,
+        _env: &Env,
+    ) -> druid::Handled {
+        match cmd {
+            c if c.is(NEW_FILE) => {
+                data.content.clear();
+                data.file_path = None;
+            }
+            c if c.is(OPEN_FILE) => self.open_file(data),
+            c if c.is(SAVE_FILE) => self.save_file(data),
+            c if c.is(SAVE_FILE_AS) => self.save_file_as(data),
+            _ => return druid::Handled::No,
+        }
+        druid::Handled::Yes
+    }
+}
+
+impl AppDelegate {
+    fn open_file(&self, data: &mut EditorState) {
+        if let Some(path) = FileDialog::new().pick_file() {
+            if let Ok(mut file) = File::open(&path) {
+                let mut content = String::new();
+                if file.read_to_string(&mut content).is_ok() {
+                    data.content = content;
+                    data.file_path = Some(path.display().to_string());
+                }
+            }
+        }
+    }
+
+    fn save_file(&self, data: &mut EditorState) {
+        if let Some(path) = &data.file_path {
+            if let Ok(mut file) = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+            {
+                file.write_all(data.content.as_bytes()).ok();
+            }
+        } else {
+            self.save_file_as(data);
+        }
+    }
+
+    fn save_file_as(&self, data: &mut EditorState) {
+        if let Some(path) = FileDialog::new().save_file() {
+            if let Ok(mut file) = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+            {
+                file.write_all(data.content.as_bytes()).ok();
+                data.file_path = Some(path.display().to_string());
+            }
+        }
+    }
 }

@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 druid = "0.8.3"
+rfd = "0.15.3"
